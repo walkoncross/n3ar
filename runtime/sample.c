@@ -6,6 +6,23 @@
 
 #include "n3ar.c"
 
+//#define PRINT_SAVE_GLYPHS_IMAGE
+
+#define SAVE_ASCII_TXT
+
+#ifdef SAVE_ASCII_TXT
+char glyph_char_table[] =
+{
+	' ', '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', ' + ', ',', ' - ', '.', ' / ', 
+	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '<', '=', '>', '?',
+	'@', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O',
+	'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '[', '\\', ']', '^', '_', 
+	'`', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o',
+	'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '{', '|', '}', '~'
+};
+#endif
+
+
 /*
 	rendering structures
 */
@@ -276,6 +293,52 @@ void transform_to_ascii(uint8_t pixels[], int* nrows, int* ncols, int ldim)
 					pixels[(r+i)*ldim+(c+j)] = glyph[i*glyphncols+j];
 		}
 }
+#ifdef SAVE_ASCII_TXT
+void transform_to_ascii_with_chars(uint8_t pixels[], int* nrows, int* ncols, int ldim, char* const chars)
+{
+	static uint8_t indexmatrix[640 * 480];
+	uint8_t* pchars = chars;
+
+	int r, c;
+
+	int n;
+
+	//
+	*nrows = (*nrows / glyphnrows)*glyphnrows;
+	*ncols = (*ncols / glyphncols)*glyphncols;
+
+	//
+	compute_index_matrix(indexmatrix, pixels, *nrows, *ncols, ldim);
+
+	//
+	n = 0;
+
+	for (r = 0; r<*nrows; r += glyphnrows)
+	{
+		for (c = 0; c<*ncols; c += glyphncols)
+		{
+			int i, j, idx;
+			uint8_t* glyph;
+
+			//
+			idx = indexmatrix[n];
+
+			++n;
+
+			*pchars++ = glyph_char_table[idx];
+
+			//
+			glyph = (uint8_t*)&glyphs[idx][0];
+
+			for (i = 0; i<glyphnrows; ++i)
+				for (j = 0; j<glyphncols; ++j)
+					pixels[(r + i)*ldim + (c + j)] = glyph[i*glyphncols + j];
+		}
+
+		*pchars++ = '\n';
+	}
+}
+#endif
 
 /*
 	
@@ -365,7 +428,21 @@ int process_image(char src[], char dst[])
 	//
 	CLAHE(pixels, pixels, nrows, ncols, ldim, 8, 8, 3);
 
+#ifdef SAVE_ASCII_TXT
+	int nChars = nrows / 8 * (ncols / 8 + 1);
+	char* chars = malloc(nChars);
+	char save_txt_file[256];
+	sprintf(save_txt_file, "%s_ascii.txt", dst);
+	FILE* fp = fopen(save_txt_file, "w");
+	transform_to_ascii_with_chars(pixels, &nrows, &ncols, ldim, chars);
+	for (int i = 0; i < nChars; i++)
+	{
+		fprintf(fp, "%c", chars[i]);
+	}
+	free(chars);
+#else
 	transform_to_ascii(pixels, &nrows, &ncols, ldim);
+#endif
 
 	//
 	if(!save_image_to_file(dst, pixels, nrows, ncols, ldim))
@@ -458,7 +535,10 @@ int initialize_video_stream(char avifile[])
 		videostream = cvCaptureFromCAM(0);
 
 	if(!videostream)
+	{
+		printf("Error: failed to initialize video stream!!!\n");
 		return 0;
+	}
 
 	return 1;
 }
@@ -475,16 +555,31 @@ uint8_t* get_frame_from_video_stream(int* nrows, int* ncols, int* ldim)
 	IplImage* frame;
 	
 	//
-	if(!videostream)
+	if (!videostream)
+	{
+		printf("Error: failed to open videostream!!!\n");
 		return 0;
+	}
 
 	// get the frame
-	cvGrabFrame(videostream);
-	frame = cvRetrieveFrame(videostream, CV_LOAD_IMAGE_GRAYSCALE);
+	//if (!cvGrabFrame(videostream))
+	//{
+	//	printf("Error: failed to grab a from videostream!!!\n");
+	//	return 0;
+
+	//}
+	//
+	////frame = cvRetrieveFrame(videostream, CV_LOAD_IMAGE_GRAYSCALE);
+	//frame = cvRetrieveFrame(videostream, 0);
+
+	frame = cvQueryFrame(videostream);
 	
 	if(!frame)
+	{
+		printf("Error: failed to retrieve a frame from videostream!!!\n");
 		return 0;
-	
+	}
+
 	// convert to grayscale
 	if(!gray)
 		gray = cvCreateImage(cvSize(frame->width, frame->height), frame->depth, 1);
@@ -573,6 +668,65 @@ int main(int argc, char* argv[])
 
 	//
 	unpack_rendering_structures(glyphs, &glyphnum, &glyphnrows, &glyphncols, &tree, pack);
+
+#ifdef PRINT_SAVE_GLYPHS_IMAGE
+	int wd = glyphncols * 16;
+	int ht = glyphnrows * 16;
+	int i;
+	int j;
+	int k;
+
+	IplImage* glyphImage = cvCreateImage(cvSize(wd, ht), IPL_DEPTH_8U, 1);
+	cvSetZero(glyphImage);
+
+	//for (k=0; k<glyphnum; k++)
+	//{
+	//	printf("\nglyph #%d:\n", k);
+	//	uint8_t* glyph = (uint8_t*)&glyphs[k][0];
+
+	//	for (i = 0; i < glyphnrows; i++)
+	//	{
+	//		for (j = 0; j < glyphncols; j++)
+	//		{
+	//			printf("%d", glyph[i * glyphncols + j]>0 ? 1 : 0);
+	//		}
+
+	//		printf("\n");
+	//	}
+	//}
+
+	for (i = 0; i < ht; i++)
+	{
+		unsigned char* pdst = glyphImage->imageData + glyphImage->widthStep * i;
+		int ii = i / glyphnrows;
+		int ii2 = i % glyphnrows;
+
+		for (j = 0; j < wd; j++)
+		{
+			int jj = j / glyphncols;
+			int jj2 = j % glyphncols;
+
+			if (ii * 16 + jj < glyphnum)
+			{
+				uint8_t* glyph = (uint8_t*)&glyphs[ii * 16 + jj][0];
+				//*pdst++ = *(glyphs[ii * 16 + jj] + ii2 * glyphncols + jj2);
+				*pdst++ = glyph[ii2 * glyphncols + jj2];
+			}
+			else
+			{
+				*pdst++ = 0;
+			}
+		}
+	}
+	
+	cvNamedWindow("glyphs", 0);
+	cvShowImage("glyphs", glyphImage);
+	cvWaitKey(0);
+
+	cvDestroyAllWindows();
+ 	cvSaveImage("Glyphs.png", glyphImage, 0);
+	cvReleaseImage(&glyphImage);
+#endif 
 
 	//
 	if(argc == 1)
